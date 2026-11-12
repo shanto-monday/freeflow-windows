@@ -344,9 +344,10 @@ namespace FreeFlowWin
             // ---------------- right column
             y = top;
             Section("GENERAL", X2, ref y);
-            var gen = NewCard(X2, y, 50 * 5);
+            var gen = NewCard(X2, y, 50 * 6);
             ToggleRow(gen, 0, "Clean up text", s.Cleanup, v => { s.Cleanup = v; Save(); });
             StyleRow(gen, 1);
+            LangRow(gen, 5);
             ToggleRow(gen, 2, "Sounds", s.Sounds, v => { s.Sounds = v; Save(); });
             bool startup = false; try { startup = Settings.StartWithWindows; } catch { }
             ToggleRow(gen, 3, "Start with Windows", startup, v => { if (!preview) try { Settings.StartWithWindows = v; } catch { } });
@@ -386,7 +387,7 @@ namespace FreeFlowWin
             baseHeight = y + 8;
 
             advA = NewCard(M, y, 50 * 3);
-            FieldRow(advA, 0, "Language", s.Language, "Auto", v => { s.Language = v; Save(); });
+            FieldRow(advA, 0, "Language code", s.Language, "auto", v => { s.Language = v; Save(); });
             FieldRow(advA, 1, "Cloud speech model", s.TranscriptionModel, "whisper-large-v3", v => { if (v != "") { s.TranscriptionModel = v; Save(); } });
             FieldRow(advA, 2, "Cleanup model", s.CleanupModel, "openai/gpt-oss-120b", v => { if (v != "") { s.CleanupModel = v; Save(); } });
             advB = NewCard(X2, y, 50 * 3);
@@ -432,7 +433,19 @@ namespace FreeFlowWin
             c.Controls.Add(t);
         }
 
-        void StyleRow(Card c, int i)
+        void LangRow(Card c, int i)
+    {
+        int top = i * 50;
+        if (i > 0) c.Seps.Add(top);
+        L("I speak", Theme.F(10.5f), Theme.Text, 16, top + 14, c);
+        int sel = s.Language == "bn" ? 1 : s.Language == "" ? 2 : 0;
+        var seg = new Segmented(new[] { "English", "\u09AC\u09BE\u0982\u09B2\u09BE", "Auto" }, sel) { Width = 246, Top = top + 9, Height = 32 };
+        seg.Left = c.Width - 16 - seg.Width;
+        seg.Changed += delegate { s.Language = seg.Selected == 1 ? "bn" : seg.Selected == 2 ? "" : "en"; Save(); };
+        c.Controls.Add(seg);
+    }
+
+    void StyleRow(Card c, int i)
         {
             int top = i * 50;
             if (i > 0) c.Seps.Add(top);

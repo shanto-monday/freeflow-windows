@@ -130,7 +130,7 @@ namespace FreeFlowWin
         public string TranscriptionModel = "whisper-large-v3";
         public string CleanupModel = "openai/gpt-oss-120b";
         public bool Cleanup = true;
-        public string Language = "";            // blank = auto detect
+        public string Language = "en";          // "en", "bn", or "" = auto detect
         public int[] Hotkey = new[] { 0xA3 };   // Right Ctrl
         public bool Toggle = false;             // false = hold to talk, true = tap to start / tap to stop
         public bool Sounds = true;
@@ -179,13 +179,14 @@ namespace FreeFlowWin
             var s = new Settings();
             Directory.CreateDirectory(Dir);
             if (!File.Exists(VocabPath)) File.WriteAllText(VocabPath, "# One word or name per line. FreeFlow keeps these spellings.\r\n");
-            if (File.Exists(IniPath)) s.ReadIni();
+            if (File.Exists(IniPath)) { s.ReadIni(); s.MigrateLanguage(); }
             string before = s.PromptHash;
             s.RefreshPrompt();
             if (s.PromptHash != before) s.Save();
             return s;
         }
 
+        bool langChosen;
         void ReadIni()
         {
             var s = this;
@@ -202,6 +203,7 @@ namespace FreeFlowWin
                     case "CleanupModel": if (v != "" && v != "openai/gpt-oss-20b") s.CleanupModel = v; break; // 20b = old default, skipped backtrack in chats
                     case "Cleanup": s.Cleanup = v == "1"; break;
                     case "Language": s.Language = v; break;
+                    case "LanguageSet": langChosen = v == "1"; break;
                     case "HotkeyVk": { int vk; if (int.TryParse(v, out vk)) s.Hotkey = new[] { vk }; break; } // old format
                     case "Hotkey":
                         {
@@ -221,6 +223,9 @@ namespace FreeFlowWin
                 }
             }
         }
+
+        // before 3.3 the default was auto-detect, which turned accented English into Bengali: move those to English
+        void MigrateLanguage() { if (!langChosen && Language == "") Language = "en"; langChosen = true; }
 
         public string StatsText()
         {
@@ -242,6 +247,7 @@ namespace FreeFlowWin
                 sb.AppendLine("CleanupModel=" + CleanupModel);
                 sb.AppendLine("Cleanup=" + (Cleanup ? "1" : "0"));
                 sb.AppendLine("Language=" + Language);
+                sb.AppendLine("LanguageSet=1");
                 sb.AppendLine("Hotkey=" + string.Join(",", Hotkey.Select(x => x.ToString()).ToArray()));
                 sb.AppendLine("Mode=" + (Toggle ? "toggle" : "hold"));
                 sb.AppendLine("Sounds=" + (Sounds ? "1" : "0"));
@@ -785,6 +791,33 @@ Sound like the speaker (very important):
         }
     }
 
+    // ------------------------------------------------------------------ safety checks on results
+    static class Guard
+    {
+        static bool HasBangla(string t) { foreach (char c in t) if (c >= '\u0980' && c <= '\u09FF') return true; return false; }
+
+        // Whisper "hears" these in silence or noise
+        static readonly string[] Phantoms = { "you", "thank you", "thanks", "thank you.", "bye", "bye-bye", "thanks for watching", "thank you for watching", "so", "okay", "uh", "um", "hmm", "." };
+        public static string DropPhantom(string raw, double seconds, float peak)
+        {
+            string t = raw.Trim().ToLowerInvariant().Trim('.', '!', '?', ',', ' ');
+            if (t.Length == 0) return "";
+            if (Array.IndexOf(Phantoms, t) >= 0 && (seconds < 2.5 || peak < 0.03)) return "";
+            return raw;
+        }
+
+        // clean up must not translate or rewrite: fall back to the raw words when it looks wrong
+        public static string CheckCleanup(string raw, string final)
+        {
+            if (final.Length == 0) return final;
+            if (HasBangla(final) && !HasBangla(raw)) return raw;
+            if (!HasBangla(final) && HasBangla(raw) && raw.Length > 20) return raw;
+            if (raw.Length > 60 && final.Length < raw.Length * 0.4) return raw;
+            if (final.Length > raw.Length * 2.5 + 40) return raw;
+            return final;
+        }
+    }
+
     // ------------------------------------------------------------------ main app
     class TrayApp : ApplicationContext
     {
@@ -1007,12 +1040,14 @@ Sound like the speaker (very important):
                     if (failed) raw = (await Api.Transcribe(s, wav, s.Vocabulary())).Trim(); // fall back to the cloud
                 }
                 else raw = (await Api.Transcribe(s, wav, s.Vocabulary())).Trim();
+                raw = Guard.DropPhantom(raw, seconds, peak);
                 final = raw;
                 if (raw.Length > 0 && s.Cleanup && hasKey)
                 {
                     try { final = await Api.Cleanup(s, raw, "App: " + ctxApp + "\nWindow title: " + ctxTitle, ctxApp); }
                     catch (Exception ex) { final = raw; Debug.WriteLine(ex.Message); }
                     if (final.Trim() == "EMPTY") final = "";
+                    final = Guard.CheckCleanup(raw, final);
                 }
             }
             catch (Exception ex)
