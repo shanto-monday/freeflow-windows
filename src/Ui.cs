@@ -592,7 +592,8 @@ namespace FreeFlowWin
         string title = "", hint = "";
         bool recording;
         readonly Timer anim = new Timer { Interval = 33 };
-        readonly float[] bars = new float[11];
+        readonly float[] bars = new float[15];   // level history, newest last; drawn mirrored from the centre
+        float smooth;
         int tick, pillW;
         const int Pad = 16, H = 46;
 
@@ -609,9 +610,10 @@ namespace FreeFlowWin
 
         void Shift()
         {
-            float lv = (recording && LevelSource != null) ? Math.Min(1f, (float)Math.Sqrt(LevelSource() * 12f)) : 0f;
+            float lv = (recording && LevelSource != null) ? Math.Min(1f, (float)Math.Sqrt(LevelSource() * 14f)) : 0f;
+            smooth += (lv - smooth) * (lv > smooth ? 0.6f : 0.25f); // quick rise, soft fall
             for (int i = 0; i < bars.Length - 1; i++) bars[i] = bars[i + 1];
-            bars[bars.Length - 1] = lv;
+            bars[bars.Length - 1] = smooth;
         }
 
         public void ShowStatus(string title, string hint, bool recording)
@@ -619,13 +621,15 @@ namespace FreeFlowWin
             this.title = title; this.hint = hint ?? ""; this.recording = recording;
             using (var bm = new Bitmap(1, 1)) using (var g = Graphics.FromImage(bm)) // 96 dpi units, scaled in Render
             using (var f = Theme.Semi(10.5f)) using (var fh = Theme.F(9.5f))
-                pillW = (int)(20 + (recording ? 20 + bars.Length * 5 + 10 : 40) + g.MeasureString(title, f).Width + 4 + (this.hint.Length > 0 ? g.MeasureString(this.hint, fh).Width : 0) + 16);
+                pillW = (int)(18 + 12 + 12 + WaveW + 14 + Math.Max(g.MeasureString("Listening", f).Width, g.MeasureString(title, f).Width) + 16);
             if (!Visible) { for (int i = 0; i < bars.Length; i++) bars[i] = 0; Show(); }
             anim.Start();
             Render();
         }
 
         public void HideOverlay() { anim.Stop(); Hide(); }
+        const float BarW = 3f, BarGap = 2.6f;
+        float WaveW { get { return (bars.Length * 2 - 1) * (BarW + BarGap) - BarGap; } }
 
         void Render()
         {
@@ -648,41 +652,35 @@ namespace FreeFlowWin
                         using (var b = new SolidBrush(Color.FromArgb(240, 24, 24, 27))) g.FillPath(b, p);
                         using (var pen = new Pen(Color.FromArgb(40, 255, 255, 255))) g.DrawPath(pen, p);
                     }
-                    float x = Pad + 20, cy = Pad + H / 2f;
+                    float x = Pad + 18, cy = Pad + H / 2f;
+                    // record button
                     if (recording)
                     {
-                        float pulse = 0.75f + 0.25f * (float)Math.Sin(tick / 4.0);
-                        using (var b = new SolidBrush(Color.FromArgb((int)(255 * pulse), 255, 69, 58))) g.FillEllipse(b, x, cy - 5, 10, 10);
-                        x += 20;
-                        for (int i = 0; i < bars.Length; i++)
-                        {
-                            float bh = 4 + bars[i] * 20;
-                            using (var p = Theme.Round(new RectangleF(x + i * 5, cy - bh / 2, 3, bh), 1.5f))
-                            using (var b = new SolidBrush(Color.FromArgb(235, 255, 255, 255))) g.FillPath(b, p);
-                        }
-                        x += bars.Length * 5 + 10;
+                        float pulse = 0.55f + 0.45f * (float)Math.Abs(Math.Sin(tick / 6.0));
+                        using (var b = new SolidBrush(Color.FromArgb((int)(70 * pulse), 255, 69, 58))) g.FillEllipse(b, x - 4, cy - 10, 20, 20);
+                        using (var b = new SolidBrush(Color.FromArgb(255, 255, 69, 58))) g.FillEllipse(b, x + 1, cy - 5, 10, 10);
                     }
                     else
+                        using (var b = new SolidBrush(Color.FromArgb(150, 255, 255, 255))) g.FillEllipse(b, x + 1, cy - 5, 10, 10);
+                    x += 12 + 12;
+                    // sound wave: newest level in the middle, older levels spread out to both sides
+                    int n = bars.Length;
+                    for (int i = 0; i < n * 2 - 1; i++)
                     {
-                        for (int i = 0; i < 3; i++)
-                        {
-                            float a = 0.35f + 0.65f * (float)Math.Max(0, Math.Sin(tick / 3.0 - i * 0.9));
-                            using (var b = new SolidBrush(Color.FromArgb((int)(255 * a), 255, 255, 255))) g.FillEllipse(b, x + i * 10, cy - 3.5f, 7, 7);
-                        }
-                        x += 40;
+                        int d = Math.Abs(i - (n - 1));            // distance from centre
+                        float v;
+                        if (recording) v = bars[n - 1 - d] * (1f - d * 0.035f);
+                        else v = 0.18f + 0.16f * (float)Math.Sin(tick / 3.0 - i * 0.45);  // writing: calm moving wave
+                        float bh = Math.Max(3f, 3f + v * 26f);
+                        using (var p = Theme.Round(new RectangleF(x + i * (BarW + BarGap), cy - bh / 2, BarW, bh), BarW / 2))
+                        using (var b = new SolidBrush(Color.FromArgb(recording ? 240 : 170, 255, 255, 255))) g.FillPath(b, p);
                     }
+                    x += WaveW + 14;
                     using (var f = Theme.Semi(10.5f)) using (var b = new SolidBrush(Color.White))
                     {
                         var sz = g.MeasureString(title, f);
                         g.DrawString(title, f, b, x, cy - sz.Height / 2);
-                        x += sz.Width + 4;
                     }
-                    if (hint.Length > 0)
-                        using (var f = Theme.F(9.5f)) using (var b = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
-                        {
-                            var sz = g.MeasureString(hint, f);
-                            g.DrawString(hint, f, b, x, cy - sz.Height / 2);
-                        }
                 }
                 if (DebugSave != null) { bmp.Save(DebugSave); DebugSave = null; if (Saved != null) Saved(); }
                 Apply(bmp, pos);

@@ -774,7 +774,12 @@ Sound like the speaker (very important):
         {
             s = Settings.Load();
             LocalEngine.Init();
-            if (s.Engine == "local" && LocalEngine.Installed) { var t0 = LocalEngine.Start(); }
+            if (s.Engine == "local" && LocalEngine.Installed)
+            {
+                var warm = new System.Windows.Forms.Timer { Interval = 20000 };
+                warm.Tick += delegate { warm.Stop(); warm.Dispose(); if (state == State.Idle && !LocalEngine.Running) { var t0 = LocalEngine.Start(); } };
+                warm.Start();
+            }
             overlay.LevelSource = delegate { return rec.Level; };
             var h = overlay.Handle; // create on UI thread
 
@@ -894,7 +899,7 @@ Sound like the speaker (very important):
                 if ((DateTime.Now - lastTapAt).TotalMilliseconds < 500)
                 {
                     state = State.Locked; lastTapAt = DateTime.MinValue;
-                    overlay.ShowStatus("Hands-free", s.HotkeyText() + " to stop", true);
+                    overlay.ShowStatus("Listening", "", true);
                     return;
                 }
                 lastTapAt = DateTime.Now;
@@ -912,7 +917,7 @@ Sound like the speaker (very important):
             state = State.Recording;
             downAt = DateTime.Now;
             Beep(true);
-            overlay.ShowStatus(label, s.Toggle ? s.HotkeyText() + " to stop" : "", true);
+            overlay.ShowStatus("Listening", "", true);
         }
 
         void Cancel()
@@ -946,7 +951,7 @@ Sound like the speaker (very important):
             if (seconds < 0.4 || peak < 0.004) { state = State.Idle; overlay.HideOverlay(); return; }
             state = State.Working;
             bool local = s.Engine == "local" && LocalEngine.Installed;
-            overlay.ShowStatus("Writing", local ? "on your " + LocalEngine.PlaceName : "", false);
+            overlay.ShowStatus("Writing", "", false);
             string raw = "", final = "";
             bool hasKey = !string.IsNullOrEmpty(s.ApiKey);
             try
