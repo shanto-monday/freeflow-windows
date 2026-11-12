@@ -252,7 +252,8 @@ namespace FreeFlowWin
         readonly Action changed;
         readonly bool preview;
         Label subtitle, stats, modeNote, keyStatus, chevron, engineLine, updateAction;
-        KeyPill pill;
+        KeyPill pill, cancelPill;
+        bool capCancel;
         Segmented mode, engine;
         ProgressLine progress;
         Card advA, advB;
@@ -305,17 +306,24 @@ namespace FreeFlowWin
 
             // ---------------- left column
             Section("TALK KEY", M, ref y);
-            var talk = NewCard(M, y, 52 + 58);
+            var talk = NewCard(M, y, 52 + 58 + 52);
             L("Shortcut", Theme.F(10.5f), Theme.Text, 16, 15, talk);
             pill = new KeyPill { Top = 11 };
             talk.Controls.Add(pill);
             pill.Left = Col - 16 - 10; pill.Width = 10;
             pill.SetKeys(s.Hotkey);
-            pill.Click += delegate { StartCapture(); };
+            pill.Click += delegate { StartCapture(false); };
             talk.Seps.Add(52);
             mode = new Segmented(new[] { "Hold to talk", "Tap to start / stop" }, s.Toggle ? 1 : 0) { Left = 16, Top = 52 + 12, Width = Col - 32 };
             mode.Changed += delegate { s.Toggle = mode.Selected == 1; Save(); UpdateTexts(); };
             talk.Controls.Add(mode);
+            talk.Seps.Add(110);
+            L("Cancel key", Theme.F(10.5f), Theme.Text, 16, 110 + 15, talk);
+            cancelPill = new KeyPill { Top = 110 + 11 };
+            talk.Controls.Add(cancelPill);
+            cancelPill.Left = Col - 16 - 10; cancelPill.Width = 10;
+            cancelPill.SetKeys(new[] { s.CancelKey });
+            cancelPill.Click += delegate { StartCapture(true); };
             y += talk.Height + 6;
             modeNote = L("", Theme.F(8.75f), Theme.Sub, M + 16, y, body);
             y += 34;
@@ -392,7 +400,7 @@ namespace FreeFlowWin
             // scale the whole layout for the screen's zoom level, then re-centre text boxes in their rows
             float S = Theme.S;
             if (S != 1f) Scale(new SizeF(S, S));
-            pill.SetKeys(s.Hotkey);
+            pill.SetKeys(s.Hotkey); cancelPill.SetKeys(new[] { s.CancelKey });
             foreach (Control card in body.Controls)
                 foreach (Control c in card.Controls)
                     if (c is TextBox && c.Tag is int) c.Top = (int)(((int)c.Tag) * S) + ((int)(50 * S) - c.Height) / 2;
@@ -476,7 +484,7 @@ namespace FreeFlowWin
         {
             string k = s.HotkeyText();
             subtitle.Text = s.Toggle ? "Press " + k + " to talk" : "Hold " + k + " to talk";
-            modeNote.Text = s.Toggle ? "Press once to start. Press again to stop and paste." : "Hold while you talk, let go to paste. Double-tap for hands-free.";
+            modeNote.Text = s.Toggle ? "Press once to start, again to stop and paste." : "Hold while you talk, let go to paste. Double-tap for hands-free.";
         }
 
         void ShowUpdate()
@@ -542,12 +550,14 @@ namespace FreeFlowWin
         }
 
         // ---- record a new talk key
-        void StartCapture()
+        void StartCapture(bool forCancel)
         {
-            if (!Hotkeys.Installed || pill.Capturing) return;
-            pill.Capturing = true; pill.SetKeys(new int[0]);
-            subtitle.Text = "Press the key or keys you want. Esc to cancel.";
-            Hotkeys.CaptureProgress = k => pill.SetKeys(k);
+            if (!Hotkeys.Installed || pill.Capturing || cancelPill.Capturing) return;
+            capCancel = forCancel;
+            var target = forCancel ? cancelPill : pill;
+            target.Capturing = true; target.SetKeys(new int[0]);
+            subtitle.Text = forCancel ? "Press the key that should cancel. Esc keeps it as is." : "Press the key or keys you want. Esc to cancel.";
+            Hotkeys.CaptureProgress = k => target.SetKeys(forCancel ? new[] { k[k.Length - 1] } : k);
             Hotkeys.CaptureCancelled = delegate { EndCapture(null); };
             Hotkeys.CaptureDone = k => EndCapture(k);
             Hotkeys.StartCapture();
@@ -555,6 +565,20 @@ namespace FreeFlowWin
 
         void EndCapture(int[] keys)
         {
+            if (capCancel)
+            {
+                cancelPill.Capturing = false;
+                if (keys != null && keys.Length > 0)
+                {
+                    int vk = keys.Where(x => !KeyNames.IsModifier(x)).DefaultIfEmpty(keys[keys.Length - 1]).Last();
+                    if (KeyNames.IsTypingKey(vk) || Array.IndexOf(s.Hotkey, vk) >= 0)
+                        subtitle.Text = KeyNames.Name(vk) + (KeyNames.IsTypingKey(vk) ? " is a typing key. Pick F1-F12, Pause, Insert..." : " is your talk key. Pick another.");
+                    else { s.CancelKey = vk; Save(); UpdateTexts(); }
+                }
+                else UpdateTexts();
+                cancelPill.SetKeys(new[] { s.CancelKey });
+                return;
+            }
             pill.Capturing = false;
             if (keys != null && keys.Length == 1 && KeyNames.IsTypingKey(keys[0]))
             {

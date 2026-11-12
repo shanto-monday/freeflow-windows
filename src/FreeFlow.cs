@@ -134,6 +134,7 @@ namespace FreeFlowWin
         public int[] Hotkey = new[] { 0xA3 };   // Right Ctrl
         public bool Toggle = false;             // false = hold to talk, true = tap to start / tap to stop
         public bool Sounds = true;
+        public int CancelKey = 0x1B;            // key that cancels a recording (default Esc)
         public string Engine = "cloud";         // "cloud" = Groq, "local" = this PC (GPU)
         public int ChatStyle = 1;               // chat apps: 0 = normal, 1 = casual, 2 = lowercase
         public long TotalWords = 0;
@@ -211,6 +212,7 @@ namespace FreeFlowWin
                         }
                     case "Mode": s.Toggle = v == "toggle"; break;
                     case "Sounds": s.Sounds = v == "1"; break;
+                    case "CancelKey": { int ck; if (int.TryParse(v, out ck) && ck > 0) s.CancelKey = ck; break; }
                     case "Engine": s.Engine = v == "local" ? "local" : "cloud"; break;
                     case "ChatStyle": { int n; if (int.TryParse(v, out n) && n >= 0 && n <= 2) s.ChatStyle = n; break; }
                     case "TotalWords": long.TryParse(v, out s.TotalWords); break;
@@ -243,6 +245,7 @@ namespace FreeFlowWin
                 sb.AppendLine("Hotkey=" + string.Join(",", Hotkey.Select(x => x.ToString()).ToArray()));
                 sb.AppendLine("Mode=" + (Toggle ? "toggle" : "hold"));
                 sb.AppendLine("Sounds=" + (Sounds ? "1" : "0"));
+                sb.AppendLine("CancelKey=" + CancelKey);
                 sb.AppendLine("Engine=" + Engine);
                 sb.AppendLine("ChatStyle=" + ChatStyle);
                 sb.AppendLine("TotalWords=" + TotalWords);
@@ -361,6 +364,8 @@ namespace FreeFlowWin
     static class Hotkeys
     {
         public static int[] Combo = new[] { 0xA3 };
+        public static volatile int CancelVk = 0x1B;
+        public static volatile bool Busy;                 // recording right now (the cancel key is swallowed then)
         public static Action ComboDown, ComboUp, OtherKeyDown, EscapeDown;
         public static Action<int[]> CaptureProgress, CaptureDone;
         public static Action CaptureCancelled;
@@ -368,18 +373,42 @@ namespace FreeFlowWin
         static IntPtr hook;
         static Native.LowLevelKeyboardProc proc;
         static readonly HashSet<int> down = new HashSet<int>();
-        static bool comboActive, capturing;
+        static bool comboActive;
+        static volatile bool capturing;
+        static readonly Dictionary<int, uint> lastDown = new Dictionary<int, uint>();
+        static int hookThreadId;
         static readonly HashSet<int> capDown = new HashSet<int>(), capAll = new HashSet<int>();
         static SynchronizationContext ui;
 
+        // The hook lives on its own thread with its own message loop. If the app's UI thread is busy,
+        // Windows would otherwise drop a slow hook silently and the talk key stops working.
         public static void Install()
         {
             ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
             proc = Callback;
+            var ready = new ManualResetEvent(false);
+            var t = new Thread(delegate ()
+            {
+                hookThreadId = Native.GetCurrentThreadId();
+                Hook();
+                ready.Set();
+                // re-attach every 2 minutes when no key is held, in case Windows removed the hook
+                var timer = new System.Windows.Forms.Timer { Interval = 120000 };
+                timer.Tick += delegate { if (!comboActive && !capturing && down.Count == 0) { Unhook(); Hook(); } };
+                timer.Start();
+                Application.Run();
+            }) { IsBackground = true, Name = "FreeFlow keys" };
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+            ready.WaitOne(3000);
+        }
+        static void Hook()
+        {
             using (var p = Process.GetCurrentProcess())
                 hook = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, proc, Native.GetModuleHandle(p.MainModule.ModuleName), 0);
         }
-        public static void Uninstall() { if (hook != IntPtr.Zero) Native.UnhookWindowsHookEx(hook); hook = IntPtr.Zero; }
+        static void Unhook() { if (hook != IntPtr.Zero) Native.UnhookWindowsHookEx(hook); hook = IntPtr.Zero; }
+        public static void Uninstall() { Unhook(); }
         public static bool Installed { get { return hook != IntPtr.Zero; } }
 
         public static void StartCapture() { capturing = true; capDown.Clear(); capAll.Clear(); comboActive = false; }
@@ -422,6 +451,11 @@ namespace FreeFlowWin
             if (isDown)
             {
                 bool isNew = down.Add(vk);
+                // a key we think is held but whose last "down" is old: its key-up was lost (lock screen,
+                // admin window...). Treat this as a fresh press instead of auto-repeat.
+                uint prev;
+                if (!isNew && lastDown.TryGetValue(vk, out prev) && unchecked(k.time - prev) > 1100) { isNew = true; if (inCombo) comboActive = false; }
+                lastDown[vk] = k.time;
                 if (isNew) Prune(vk);
                 if (inCombo)
                 {
@@ -431,12 +465,12 @@ namespace FreeFlowWin
                 else if (isNew)
                 {
                     if (comboActive) Post(OtherKeyDown);
-                    if (vk == 0x1B) Post(EscapeDown);
+                    if (vk == CancelVk) { Post(EscapeDown); if (Busy && vk != 0x1B) return (IntPtr)1; } // don't type the cancel key into the app
                 }
             }
             else if (isUp)
             {
-                down.Remove(vk);
+                down.Remove(vk); lastDown.Remove(vk);
                 if (inCombo && comboActive)
                 {
                     comboActive = false; Post(ComboUp);
@@ -471,6 +505,7 @@ namespace FreeFlowWin
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder sb, int max);
         [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
         [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
+        [DllImport("kernel32.dll")] public static extern int GetCurrentThreadId();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, string l);
         [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
         [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, int flags);
@@ -805,6 +840,7 @@ Sound like the speaker (very important):
             UpdateTip();
 
             Hotkeys.Combo = s.Hotkey;
+            Hotkeys.CancelVk = s.CancelKey;
             Hotkeys.ComboDown = OnComboDown;
             Hotkeys.ComboUp = OnComboUp;
             Hotkeys.OtherKeyDown = delegate { otherKeyUsed = true; if (state == State.Recording && !s.Toggle && (DateTime.Now - downAt).TotalMilliseconds < 1000) Cancel(); };
@@ -860,6 +896,7 @@ Sound like the speaker (very important):
             settingsForm = new SettingsForm(s, delegate
             {
                 Hotkeys.Combo = s.Hotkey;
+                Hotkeys.CancelVk = s.CancelKey;
                 cleanupItem.Checked = s.Cleanup;
                 UpdateTip();
             });
@@ -914,7 +951,7 @@ Sound like the speaker (very important):
             if (!CanTalk()) { OpenSettings(); return; }
             CaptureContext();
             if (!rec.Start()) { Toast("No microphone found", "Check Windows Settings > Privacy > Microphone."); return; }
-            state = State.Recording;
+            state = State.Recording; Hotkeys.Busy = true;
             downAt = DateTime.Now;
             Beep(true);
             overlay.ShowStatus("Listening", "", true);
@@ -924,7 +961,7 @@ Sound like the speaker (very important):
         {
             double sec;
             if (state == State.Recording || state == State.Locked) rec.Stop(out sec);
-            state = State.Idle;
+            state = State.Idle; Hotkeys.Busy = false;
             overlay.HideOverlay();
         }
 
@@ -947,6 +984,7 @@ Sound like the speaker (very important):
             double seconds;
             float peak = rec.Peak;
             byte[] wav = rec.Stop(out seconds);
+            Hotkeys.Busy = false;
             Beep(false);
             if (seconds < 0.4 || peak < 0.004) { state = State.Idle; overlay.HideOverlay(); return; }
             state = State.Working;
