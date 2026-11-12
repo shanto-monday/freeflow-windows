@@ -68,6 +68,17 @@ namespace FreeFlowWin
                 return;
             }
 
+            if (args.Length >= 3 && args[0] == "--clean")
+            {
+                var qs = Settings.Load();
+                if (args.Length > 4) qs.Language = args[4];
+                string app = args.Length > 3 ? args[3] : "notepad";
+                string outp;
+                try { outp = Guard.CheckCleanup(args[1], Api.Cleanup(qs, args[1], "App: " + app + "\nWindow title: ", app).Result); } catch (Exception ex) { outp = "ERROR " + ex.Message; }
+                File.WriteAllText(args[2], outp, Encoding.UTF8);
+                return;
+            }
+
             // QA: FreeFlow.exe --transcribe in.wav out.txt [local|cloud] [appName]  -> runs the full speech + cleanup pipeline
             if (args.Length >= 3 && args[0] == "--transcribe")
             {
@@ -98,7 +109,7 @@ namespace FreeFlowWin
             try
             {
                 if (local) { bool ok = await LocalEngine.Start(); o.AppendLine("engine start: " + ok + " " + sw.ElapsedMilliseconds + " ms (" + LocalEngine.Status + ")"); sw.Restart(); }
-                string raw = local ? await LocalEngine.Transcribe(wav, s.Language, s.Vocabulary()) : (await Api.Transcribe(s, wav, s.Vocabulary())).Trim();
+                string raw = local ? await LocalEngine.Transcribe(wav, s.Language, s.SpeechPrompt()) : (await Api.Transcribe(s, wav, s.SpeechPrompt())).Trim();
                 o.AppendLine("speech (" + (local ? "local " + LocalEngine.Flavor : "cloud") + "): " + sw.ElapsedMilliseconds + " ms");
                 o.AppendLine("raw:   " + raw);
                 sw.Restart();
@@ -273,6 +284,14 @@ namespace FreeFlowWin
             if (string.IsNullOrEmpty(b64)) return "";
             try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(b64), null, DataProtectionScope.CurrentUser)); }
             catch { return ""; }
+        }
+
+        // Whisper prompt: vocabulary, plus a short Bangla sentence in Bangla mode so it keeps Bengali script and spelling
+        public string SpeechPrompt()
+        {
+            string v = Vocabulary();
+            if (Language == "bn") return "এটা সহজ চলিত বাংলায় লেখা। " + v;
+            return v;
         }
 
         public string Vocabulary()
@@ -720,6 +739,15 @@ Sound like the speaker (very important):
 - If the speaker clearly lists three or more short items (for example 'one milk two eggs three bread', or 'first ..., second ..., third ...' where each part is a short item), put each item on its own numbered line. Keep normal sentences as prose.
 - Numbers, times and money as people type them: 'three thirty pm' -> '3:30 pm', 'twenty dollars' -> '$20', 'five percent' -> '5%'.";
 
+        const string BanglaRules = @"
+
+THE SPEAKER IS DICTATING IN BANGLA (Bengali, Bangladesh).
+- Output easy, natural, everyday Bangla in Bengali script: চলিত ভাষা, the way people text and write emails in Bangladesh. Never formal সাধু ভাষা (no করিয়াছি, যাইতেছি, তাহারা...).
+- Do not translate to English. Do not translate English words the speaker used: keep words like email, meeting, file, design, client, update, link, Facebook in English letters.
+- Fix obvious speech recognition spelling mistakes with standard Bangla spelling (e.g. 'কারন' -> 'কারণ', broken or doubled letters). Keep the speaker's own words and dialect; do not make it more formal.
+- Use Bangla punctuation: । for full stops, and ? ! , as normal. Keep numbers as digits the way they were spoken.
+- If the speech recognition produced nonsense syllables, keep only the words that clearly make sense; do not invent content.";
+
         static string StyleRule(int style)
         {
             if (style == 2) return "\n\nDESTINATION IS A CHAT APP. Style: very casual. Write everything in lowercase (keep names and acronyms like API in their normal case only if they are product or brand names), and do not end the message with a period. Keep question marks.";
@@ -734,6 +762,7 @@ Sound like the speaker (very important):
             if (ti >= 0) title = context.Substring(ti + 14);
             string system = s.SystemPrompt() + HumanRules;
             if (IsChat(app, title)) system += StyleRule(s.ChatStyle);
+            if (s.Language == "bn") system += BanglaRules;
             string vocab = s.Vocabulary();
             if (vocab.Length > 0)
                 system += "\n\nThe following vocabulary must be treated as high-priority terms while rewriting.\nUse these spellings exactly in the output when relevant:\n" + vocab;
@@ -855,6 +884,20 @@ Sound like the speaker (very important):
             menu.Items.Add("Settings", null, delegate { OpenSettings(); });
             cleanupItem = new ToolStripMenuItem("Clean up text", null, delegate { s.Cleanup = !s.Cleanup; s.Save(); cleanupItem.Checked = s.Cleanup; }) { Checked = s.Cleanup };
             menu.Items.Add(cleanupItem);
+            var lang = new ToolStripMenuItem("Language");
+            foreach (var pair in new[] { new[] { "en", "English" }, new[] { "bn", "\u09AC\u09BE\u0982\u09B2\u09BE" }, new[] { "", "Auto" } })
+            {
+                string code = pair[0];
+                var it = new ToolStripMenuItem(pair[1]) { Checked = s.Language == code };
+                it.Click += delegate
+                {
+                    s.Language = code; s.Save();
+                    foreach (ToolStripMenuItem x in lang.DropDownItems) x.Checked = x == it;
+                    tray.ShowBalloonTip(1500, "FreeFlow", "Language: " + it.Text, ToolTipIcon.None);
+                };
+                lang.DropDownItems.Add(it);
+            }
+            menu.Items.Add(lang);
             menu.Items.Add("Edit vocabulary", null, delegate { Process.Start("notepad.exe", "\"" + Settings.VocabPath + "\""); });
             menu.Items.Add(new ToolStripSeparator());
             copyLast = new ToolStripMenuItem("Copy last text", null, delegate { if (lastText != "") Clipboard.SetText(lastText); }) { Enabled = false };
@@ -1030,16 +1073,16 @@ Sound like the speaker (very important):
                 if (local)
                 {
                     bool failed = false;
-                    try { raw = await LocalEngine.Transcribe(wav, s.Language, s.Vocabulary()); }
+                    try { raw = await LocalEngine.Transcribe(wav, s.Language, s.SpeechPrompt()); }
                     catch (Exception lex)
                     {
                         if (!hasKey) throw;
                         Debug.WriteLine(lex.Message);
                         failed = true;
                     }
-                    if (failed) raw = (await Api.Transcribe(s, wav, s.Vocabulary())).Trim(); // fall back to the cloud
+                    if (failed) raw = (await Api.Transcribe(s, wav, s.SpeechPrompt())).Trim(); // fall back to the cloud
                 }
-                else raw = (await Api.Transcribe(s, wav, s.Vocabulary())).Trim();
+                else raw = (await Api.Transcribe(s, wav, s.SpeechPrompt())).Trim();
                 raw = Guard.DropPhantom(raw, seconds, peak);
                 final = raw;
                 if (raw.Length > 0 && s.Cleanup && hasKey)
