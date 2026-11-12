@@ -1,0 +1,10 @@
+# never publish the personal Groq key or builds that contain it
+secret.key
+src/BuildInfo.g.cs
+FreeFlow.exe
+FreeFlow.exe.old
+FreeFlow.exe.new
+share/FreeFlow.exe
+*.zip
+src/app.ico
+dist/

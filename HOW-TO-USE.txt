@@ -1,0 +1,24 @@
+FreeFlow for Windows - talk, and clean text is typed where your cursor is.
+
+1. Unzip, then double-click FreeFlow.exe.
+   If Windows says "Windows protected your PC": click "More info" > "Run anyway".
+   (The app is not signed with a paid certificate, that is why.)
+
+2. Settings open. Pick how speech becomes text:
+   - Cloud: get a free Groq key at https://console.groq.com/keys
+     (sign up, "Create API Key", copy it) and paste it in the key box.
+   - My GPU: runs on your own graphics card. One download (1.2 GB with NVIDIA,
+     200 MB without). Works offline. A Groq key is still needed for clean up.
+
+3. Click into any text box (email, chat, Word...).
+   Hold Right Ctrl, talk, let go. Your words are pasted, cleaned up.
+
+Talk key options (click the tray icon, bottom right, near the clock):
+- Shortcut: click the key button, press any key or combo you like.
+- Hold to talk: hold the key while you talk. Double-tap for hands-free.
+- Tap to start / stop: tap once to start, tap again to stop.
+- Esc cancels.
+
+FreeFlow updates itself. Tray menu > Check for updates does it right away.
+Needs Windows 10 or 11 and a microphone.
+Tip: put FreeFlow.exe in a fixed folder (e.g. Documents) before turning on "Start with Windows".
